@@ -144,42 +144,6 @@ fn test_ttl_extended_after_ledger_advance() {
     assert_eq!(client.get_share(&a), 6000);
     assert_eq!(client.get_share(&b), 4000);
 }
-    let env = Env::default();
-    let (contract_id, client) = setup(&env);
-
-    let admin = Address::generate(&env);
-    let b = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token = make_token(&env, &token_admin);
-
-    env.mock_all_auths();
-    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
-
-    mint(&env, &token, &contract_id, 1000);
-
-    env.mock_auths(&[]);
-    client.distribute(&token);
-}
-
-/// TTL — advancing the ledger past MIN_TTL and calling a read function must
-/// still succeed because every public function extends the TTL on entry.
-#[test]
-fn test_ttl_extended_after_ledger_advance() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let (_, client) = setup(&env);
-
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    client.initialize(&vec![&env, a.clone(), b.clone()], &vec![&env, 6000_u32, 4000_u32]);
-
-    env.ledger().set_sequence_number(env.ledger().sequence() + 17_281);
-
-    let collaborators = client.get_collaborators();
-    assert_eq!(collaborators.len(), 2);
-    assert_eq!(client.get_share(&a), 6000);
-    assert_eq!(client.get_share(&b), 4000);
-}
 
 /// Events — distribute emits a ("royalty", "dist_all") event with (token, amount).
 #[test]

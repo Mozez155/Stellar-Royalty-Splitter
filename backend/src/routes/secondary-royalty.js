@@ -1,11 +1,11 @@
 import { Router } from "express";
 import {
-  buildTx,
+  retryBuildTx,
   addressToScVal,
   i128ToScVal,
   u32ToScVal,
   getRoyaltyRateFromContract,
-  server, // <-- ensure server is imported from your stellar.js or wherever it's defined
+  server,
 } from "../stellar.js";
 import {
   recordTransaction,
@@ -14,10 +14,17 @@ import {
   getSecondarySales,
   getSecondaryRoyaltyDistributions,
   getRoyaltyStatistics,
-  updateTransactionHash,
+  markSalesDistributed,
+  countSecondarySales,
   addAuditLog,
 } from "../database.js";
-import { validate, recordSecondarySaleSchema, setRoyaltyRateSchema } from "../validation.js";
+import {
+  validate,
+  recordSecondarySaleSchema,
+  setRoyaltyRateSchema,
+  validateContractIdMiddleware,
+  parsePagination,
+} from "../validation.js";
 
 export const secondaryRoyaltyRouter = Router();
 
@@ -96,12 +103,12 @@ secondaryRoyaltyRouter.post("/", validate(recordSecondarySaleSchema), async (req
       return res.status(400).json({ error: "Calculated royalty amount is zero." });
     }
 
-    const transactionId = recordTransaction(
-      contractId,
-      "secondary_royalty",
-      walletAddress,
-      { salePrice: salePrice.toString(), nftId, saleToken, royaltyRate: onChainRate }
-    );
+    const transactionId = recordTransaction(contractId, "secondary_royalty", walletAddress, {
+      salePrice: salePrice.toString(),
+      nftId,
+      saleToken,
+      royaltyRate: onChainRate,
+    });
 
     try {
       recordSecondarySale(
@@ -165,12 +172,9 @@ secondaryRoyaltyRouter.post("/set-rate", validate(setRoyaltyRateSchema), async (
     }
 
     // Record transaction
-    const transactionId = recordTransaction(
-      contractId,
-      "secondary_royalty",
-      walletAddress,
-      { royaltyRate }
-    );
+    const transactionId = recordTransaction(contractId, "secondary_royalty", walletAddress, {
+      royaltyRate,
+    });
 
     // Build transaction to set royalty rate
     const txXdr = await buildTx(walletAddress, contractId, "set_royalty_rate", [
@@ -229,12 +233,10 @@ secondaryRoyaltyRouter.post("/distribute", async (req, res, next) => {
       return sum + BigInt(sale.royaltyAmount);
     }, 0n);
 
-    const transactionId = recordTransaction(
-      contractId,
-      "secondary_distribute",
-      walletAddress,
-      { totalRoyalties: totalRoyalties.toString(), numberOfSales: pendingSales.length }
-    );
+    const transactionId = recordTransaction(contractId, "secondary_distribute", walletAddress, {
+      totalRoyalties: totalRoyalties.toString(),
+      numberOfSales: pendingSales.length,
+    });
 
     // Build transaction to distribute secondary royalties
     const txXdr = await buildTx(walletAddress, contractId, "distribute_secondary_royalties", [
@@ -333,19 +335,23 @@ secondaryRoyaltyRouter.get("/sales/:contractId", (req, res, next) => {
  * Query params: limit, offset
  * Returns paginated list of secondary royalty distributions
  */
-secondaryRoyaltyRouter.get("/distributions/:contractId", validateContractIdMiddleware, (req, res, next) => {
-  try {
-    const { contractId } = req.params;
-    const { limit = 50, offset = 0 } = req.query;
+secondaryRoyaltyRouter.get(
+  "/distributions/:contractId",
+  validateContractIdMiddleware,
+  (req, res, next) => {
+    try {
+      const { contractId } = req.params;
+      const { limit = 50, offset = 0 } = req.query;
 
-    const distributions = getSecondaryRoyaltyDistributions(
-      contractId,
-      parseInt(limit),
-      parseInt(offset)
-    );
+      const distributions = getSecondaryRoyaltyDistributions(
+        contractId,
+        parseInt(limit),
+        parseInt(offset)
+      );
 
-    res.json({ distributions });
-  } catch (err) {
-    next(err);
+      res.json({ distributions });
+    } catch (err) {
+      next(err);
+    }
   }
-});
+);

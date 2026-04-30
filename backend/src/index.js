@@ -39,10 +39,7 @@ app.use((req, res, next) => {
 // Security headers
 app.use(helmet());
 
-const corsPreflightMaxAge = parseInt(
-  process.env.CORS_PREFLIGHT_MAX_AGE ?? "86400",
-  10,
-);
+const corsPreflightMaxAge = parseInt(process.env.CORS_PREFLIGHT_MAX_AGE ?? "86400", 10);
 
 // CORS restricted to configured frontend origin
 app.use(
@@ -50,7 +47,7 @@ app.use(
     origin: process.env.FRONTEND_ORIGIN ?? "http://localhost:5173",
     methods: ["GET", "POST"],
     maxAge: Number.isNaN(corsPreflightMaxAge) ? 86400 : corsPreflightMaxAge,
-  }),
+  })
 );
 
 // General rate limiter: 100 req / 15 min per IP (skips /api/health)
@@ -108,12 +105,9 @@ app.use("/api/v1/secondary-royalty", secondaryRoyaltyRouter);
 app.use("/api/v1", historyRouter);
 app.use("/api/v1", analyticsRouter);
 app.use("/api/v1/contract", contractRouter);
-app.use("/api/v1/contract", contractRouter);
 
 // Health check
-app.get("/api/v1/health", (_req, res) =>
-  res.json({ ok: true, dbVersion: getMigrationVersion() }),
-);
+app.get("/api/v1/health", (_req, res) => res.json({ ok: true, dbVersion: getMigrationVersion() }));
 
 // Legacy /api/* redirect to /api/v1/*
 app.use("/api", (req, res) => {
@@ -127,9 +121,7 @@ app.use((err, _req, res, _next) => {
 });
 
 const PORT = process.env.PORT ?? 3001;
-const server = app.listen(PORT, () =>
-  logger.info(`API listening on http://localhost:${PORT}`),
-);
+const server = app.listen(PORT, () => logger.info(`API listening on http://localhost:${PORT}`));
 
 // Prevent hung connections from exhausting the connection pool
 server.keepAliveTimeout = parseInt(process.env.KEEP_ALIVE_TIMEOUT_MS ?? "35000");

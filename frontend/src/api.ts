@@ -96,9 +96,11 @@ export const api = {
 
   // Transaction History & Audit Log APIs
   getTransactionHistory: (contractId: string, limit = 50, offset = 0) =>
-    get<{ success: boolean; data: TransactionRecord[]; pagination: { limit: number; offset: number; total: number } }>(
-      `/history/${contractId}?limit=${limit}&offset=${offset}`,
-    ),
+    get<{
+      success: boolean;
+      data: TransactionRecord[];
+      pagination: { limit: number; offset: number; total: number };
+    }>(`/history/${contractId}?limit=${limit}&offset=${offset}`),
 
   getTransactionDetails: (txHash: string) =>
     get<{ success: boolean; data: TransactionDetails }>(
@@ -207,6 +209,14 @@ export const api = {
   // NEW: Fetch secondary royalty pool balance
   getSecondaryRoyaltyPool: (contractId: string) =>
     get<{ poolBalance: string }>(`/secondary-royalty/pool/${contractId}`),
+
+  // NEW: Fetch contract status
+  getContractStatus: (contractId: string) =>
+    get<{ initialized: boolean }>(`/contract/status/${contractId}`),
+
+  // NEW: Fetch royalty rate from contract
+  getRoyaltyRate: (contractId: string) =>
+    get<{ royaltyRate: number }>(`/secondary-royalty/rate/${contractId}`),
 
   // Analytics API
   getAnalytics: (

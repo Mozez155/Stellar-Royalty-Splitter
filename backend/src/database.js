@@ -96,9 +96,7 @@ export function initializeDatabase() {
   for (const migration of migrations) {
     if (!applied.includes(migration.version)) {
       db.exec(migration.sql);
-      db.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(
-        migration.version,
-      );
+      db.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(migration.version);
       logger.info(`Applied migration v${migration.version}`);
     }
   }
@@ -176,11 +174,15 @@ export function initializeDatabase() {
   // Migration guards for existing databases
   try {
     db.exec(`ALTER TABLE secondary_sales ADD COLUMN distributed INTEGER NOT NULL DEFAULT 0`);
-  } catch (_) { /* column already exists */ }
+  } catch (_) {
+    /* column already exists */
+  }
 
   try {
     db.exec(`ALTER TABLE distribution_payouts ADD COLUMN contractId TEXT NOT NULL DEFAULT ''`);
-  } catch (_) { /* column already exists */ }
+  } catch (_) {
+    /* column already exists */
+  }
 }
 
 // Transaction tracking functions
@@ -193,13 +195,7 @@ export function recordTransaction(contractId, type, initiatorAddress, data) {
     VALUES (?, ?, ?, ?, ?, 'pending')
   `);
 
-  const result = stmt.run(
-    contractId,
-    type,
-    initiatorAddress,
-    requestedAmount,
-    tokenId,
-  );
+  const result = stmt.run(contractId, type, initiatorAddress, requestedAmount, tokenId);
   countWrite();
   return result.lastInsertRowid;
 }
@@ -215,12 +211,7 @@ export function updateTransactionHash(transactionId, txHash) {
   countWrite();
 }
 
-export function updateTransactionStatus(
-  txHash,
-  status,
-  blockTime = null,
-  errorMessage = null,
-) {
+export function updateTransactionStatus(txHash, status, blockTime = null, errorMessage = null) {
   const stmt = db.prepare(`
     UPDATE transactions 
     SET status = ?, blockTime = ?, errorMessage = ? 
@@ -235,7 +226,7 @@ export function addDistributionPayout(
   transactionId,
   contractId,
   collaboratorAddress,
-  amountReceived,
+  amountReceived
 ) {
   const stmt = db.prepare(`
     INSERT INTO distribution_payouts 
@@ -248,9 +239,7 @@ export function addDistributionPayout(
 }
 
 export function getTransactionCount(contractId) {
-  const stmt = db.prepare(
-    `SELECT COUNT(*) as total FROM transactions WHERE contractId = ?`
-  );
+  const stmt = db.prepare(`SELECT COUNT(*) as total FROM transactions WHERE contractId = ?`);
   return stmt.get(contractId).total;
 }
 
@@ -335,7 +324,9 @@ export function getAuditLog(contractId, limit = 100, offset = 0) {
 
   return stmt.all(contractId, limit, offset).map((row) => {
     let details = null;
-    try { details = JSON.parse(row.details || "{}"); } catch (_) {}
+    try {
+      details = JSON.parse(row.details || "{}");
+    } catch (_) {}
     return { ...row, details };
   });
 }
@@ -392,8 +383,17 @@ export function recordSecondarySale(
 /**
  * Get all secondary sales for a contract with optional filtering.
  * Pass undistributedOnly=true to return only rows where distributed = 0.
+ * Supports optional date range filtering with startDate and endDate.
  */
-export function getSecondarySales(contractId, limit = 50, offset = 0, nftId = null, undistributedOnly = false) {
+export function getSecondarySales(
+  contractId,
+  limit = 50,
+  offset = 0,
+  nftId = null,
+  undistributedOnly = false,
+  startDate = null,
+  endDate = null
+) {
   let query = `
     SELECT 
       id,
@@ -421,6 +421,16 @@ export function getSecondarySales(contractId, limit = 50, offset = 0, nftId = nu
     query += ` AND distributed = 0`;
   }
 
+  if (startDate) {
+    query += ` AND timestamp >= ?`;
+    params.push(startDate);
+  }
+
+  if (endDate) {
+    query += ` AND timestamp <= ?`;
+    params.push(endDate);
+  }
+
   query += ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
   params.push(limit, offset);
 
@@ -429,14 +439,25 @@ export function getSecondarySales(contractId, limit = 50, offset = 0, nftId = nu
 
 /**
  * Count secondary sales for a contract (ignores LIMIT/OFFSET).
+ * Supports optional date range filtering with startDate and endDate.
  */
-export function countSecondarySales(contractId, nftId = null) {
+export function countSecondarySales(contractId, nftId = null, startDate = null, endDate = null) {
   let query = `SELECT COUNT(*) as total FROM secondary_sales WHERE contractId = ?`;
   const params = [contractId];
 
   if (nftId) {
     query += ` AND nftId = ?`;
     params.push(nftId);
+  }
+
+  if (startDate) {
+    query += ` AND timestamp >= ?`;
+    params.push(startDate);
+  }
+
+  if (endDate) {
+    query += ` AND timestamp <= ?`;
+    params.push(endDate);
   }
 
   return db.prepare(query).get(...params).total;
@@ -447,7 +468,9 @@ export function countSecondarySales(contractId, nftId = null) {
  */
 export function markSalesDistributed(ids) {
   const placeholders = ids.map(() => "?").join(",");
-  db.prepare(`UPDATE secondary_sales SET distributed = 1 WHERE id IN (${placeholders})`).run(...ids);
+  db.prepare(`UPDATE secondary_sales SET distributed = 1 WHERE id IN (${placeholders})`).run(
+    ...ids
+  );
   countWrite();
 }
 

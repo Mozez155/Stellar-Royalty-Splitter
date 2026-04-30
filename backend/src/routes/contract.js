@@ -1,11 +1,5 @@
 import { Router } from "express";
-import {
-  Contract,
-  SorobanRpc,
-  TransactionBuilder,
-  BASE_FEE,
-  Account,
-} from "@stellar/stellar-sdk";
+import { Contract, SorobanRpc, TransactionBuilder, BASE_FEE, Account } from "@stellar/stellar-sdk";
 import { isContractInitialized, server, networkPassphrase, addressToScVal } from "../stellar.js";
 import { validateContractIdMiddleware } from "../validation.js";
 
@@ -35,7 +29,7 @@ contractRouter.get("/balance/:contractId", validateContractIdMiddleware, async (
     const contract = new Contract(contractId);
     const dummyAccount = new Account(
       "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-      "0",
+      "0"
     );
     const tx = new TransactionBuilder(dummyAccount, {
       fee: BASE_FEE,
@@ -53,7 +47,7 @@ contractRouter.get("/balance/:contractId", validateContractIdMiddleware, async (
     const retval = sim.result?.retval;
     // get_balance returns i128
     const balance = retval?.i128()
-      ? (BigInt(retval.i128().hi()) << 64n | BigInt(retval.i128().lo())).toString()
+      ? ((BigInt(retval.i128().hi()) << 64n) | BigInt(retval.i128().lo())).toString()
       : "0";
 
     res.json({ balance });
@@ -73,7 +67,7 @@ contractRouter.get("/collaborator-count/:contractId", async (req, res, next) => 
     const contract = new Contract(contractId);
     const dummyAccount = new Account(
       "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-      "0",
+      "0"
     );
     const tx = new TransactionBuilder(dummyAccount, {
       fee: BASE_FEE,
@@ -94,37 +88,43 @@ contractRouter.get("/collaborator-count/:contractId", async (req, res, next) => 
     next(err);
   }
 });
+
+/**
+ * GET /api/contract/shares-total/:contractId
  * Returns the sum of all collaborator shares via simulation.
  * Response: { contractId, totalShares: number }
  */
-contractRouter.get("/shares-total/:contractId", validateContractIdMiddleware, async (req, res, next) => {
-  try {
-    const { contractId } = req.params;
-    const contract = new Contract(contractId);
+contractRouter.get(
+  "/shares-total/:contractId",
+  validateContractIdMiddleware,
+  async (req, res, next) => {
+    try {
+      const { contractId } = req.params;
+      const contract = new Contract(contractId);
 
-    const dummyAccount = new Account(
-      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-      "0",
-    );
-    const tx = new TransactionBuilder(dummyAccount, {
-      fee: BASE_FEE,
-      networkPassphrase,
-    })
-      .addOperation(contract.call("get_total_shares"))
-      .setTimeout(30)
-      .build();
+      const dummyAccount = new Account(
+        "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+        "0"
+      );
+      const tx = new TransactionBuilder(dummyAccount, {
+        fee: BASE_FEE,
+        networkPassphrase,
+      })
+        .addOperation(contract.call("get_total_shares"))
+        .setTimeout(30)
+        .build();
 
-    const sim = await server.simulateTransaction(tx);
-    if (SorobanRpc.Api.isSimulationError(sim)) {
-      return res.status(400).json({ error: sim.error });
+      const sim = await server.simulateTransaction(tx);
+      if (SorobanRpc.Api.isSimulationError(sim)) {
+        return res.status(400).json({ error: sim.error });
+      }
+
+      const resultVal = sim.result?.retval;
+      const totalShares = resultVal?.u32() ?? 0;
+
+      res.json({ contractId, totalShares });
+    } catch (err) {
+      next(err);
     }
-
-    const resultVal = sim.result?.retval;
-    const totalShares = resultVal?.u32() ?? 0;
-
-    res.json({ contractId, totalShares });
-  } catch (err) {
-    next(err);
   }
-});
-
+);

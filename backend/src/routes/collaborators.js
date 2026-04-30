@@ -9,6 +9,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { server, networkPassphrase } from "../stellar.js";
 import logger from "../logger.js";
+import { validateContractIdMiddleware } from "../validation.js";
 
 export const collaboratorsRouter = Router();
 
@@ -26,7 +27,7 @@ collaboratorsRouter.get("/:contractId", validateContractIdMiddleware, async (req
 
     const dummyAccount = new Account(
       "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-      "0",
+      "0"
     );
 
     // Single simulation — replaces N+1 individual get_share calls
