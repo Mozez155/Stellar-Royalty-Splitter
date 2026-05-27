@@ -362,3 +362,47 @@ fn test_pause_requires_admin_auth() {
     env.mock_auths(&[]);
     client.pause();
 }
+
+// ── #224: royalty rate boundary values ──────────────────────────────────────
+
+/// Rate of 0 is valid (disables royalties).
+#[test]
+fn test_royalty_rate_boundary_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, client) = setup(&env);
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+
+    client.set_royalty_rate(&0_u32);
+    assert_eq!(client.get_royalty_rate(), 0);
+}
+
+/// Rate of 10,000 is valid (100% royalty).
+#[test]
+fn test_royalty_rate_boundary_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, client) = setup(&env);
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+
+    client.set_royalty_rate(&10_000_u32);
+    assert_eq!(client.get_royalty_rate(), 10_000);
+}
+
+/// Rate of 10,001 must be rejected with a descriptive error.
+#[test]
+#[should_panic(expected = "royalty rate cannot exceed 10000 basis points")]
+fn test_royalty_rate_above_max_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, client) = setup(&env);
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+
+    client.set_royalty_rate(&10_001_u32);
+}

@@ -31,19 +31,32 @@ impl RoyaltySplitter {
 
     /// Initialize the contract with collaborators and their revenue shares.
     ///
+    /// Can only be called once. The first address in `collaborators` becomes
+    /// the admin and must authorize this transaction.
+    ///
     /// # Arguments
-    /// * `collaborators` - List of wallet addresses that will receive payouts
-    /// * `shares` - Corresponding basis-point allocations (must sum to 10,000)
+    /// * `collaborators` - Ordered list of wallet addresses that will receive payouts.
+    ///   The first address is designated as admin.
+    /// * `shares` - Basis-point allocations corresponding to each collaborator
+    ///   (1 bp = 0.01%). Must sum to exactly 10,000 (100%).
+    ///
+    /// # Authorization
+    /// Requires signature from `collaborators[0]` (the admin).
     ///
     /// # Panics
-    /// * If already initialized
-    /// * If shares don't sum to exactly 10,000 basis points (100%)
-    /// * If any share is zero or if there are duplicate addresses
+    /// * `"already initialized"` — contract has already been set up
+    /// * `"need at least one collaborator"` — empty collaborator list
+    /// * `"collaborators and shares length mismatch"` — vec lengths differ
+    /// * `"shares must sum to 10000"` — allocations don't total 100%
+    /// * `"share cannot be zero"` — any individual share is 0
+    /// * `"duplicate collaborator address"` — same address appears more than once
     pub fn initialize(
         env: Env,
         collaborators: Vec<Address>,
         shares: Vec<u32>,
     ) {
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
         }
@@ -96,10 +109,15 @@ impl RoyaltySplitter {
     /// Set the secondary royalty rate for resales.
     ///
     /// # Arguments
-    /// * `new_rate` - Royalty rate in basis points (e.g., 500 = 5%)
+    /// * `new_rate` - Royalty rate in basis points (0–10,000). 0 disables royalties;
+    ///   10,000 means 100% of the sale price goes to the royalty pool.
     ///
     /// # Authorization
-    /// Requires admin signature
+    /// Requires admin signature.
+    ///
+    /// # Panics
+    /// * `"contract not initialized"` — called before `initialize`
+    /// * `"royalty rate cannot exceed 10000 basis points"` — `new_rate > 10_000`
     pub fn set_royalty_rate(env: Env, new_rate: u32) {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
 
@@ -123,8 +141,16 @@ impl RoyaltySplitter {
         );
     }
 
-    /// Pause the contract — halts distribute and distribute_secondary_royalties.
-    /// Requires admin authorization.
+    /// Pause the contract — halts `distribute` and `distribute_secondary_royalties`.
+    ///
+    /// While paused, any call to `distribute` or `distribute_secondary_royalties`
+    /// will panic with `"contract is paused"`. Read-only functions are unaffected.
+    ///
+    /// # Authorization
+    /// Requires admin signature.
+    ///
+    /// # Panics
+    /// * `"contract not initialized"` — called before `initialize`
     pub fn pause(env: Env) {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
 
@@ -138,8 +164,13 @@ impl RoyaltySplitter {
         env.storage().instance().set(&DataKey::Paused, &true);
     }
 
-    /// Unpause the contract — re-enables distribute and distribute_secondary_royalties.
-    /// Requires admin authorization.
+    /// Unpause the contract — re-enables `distribute` and `distribute_secondary_royalties`.
+    ///
+    /// # Authorization
+    /// Requires admin signature.
+    ///
+    /// # Panics
+    /// * `"contract not initialized"` — called before `initialize`
     pub fn unpause(env: Env) {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
 
@@ -153,7 +184,8 @@ impl RoyaltySplitter {
         env.storage().instance().set(&DataKey::Paused, &false);
     }
 
-    /// Returns true if the contract is currently paused.
+    /// Returns `true` if the contract is currently paused, `false` otherwise.
+    /// Defaults to `false` before `pause` is ever called.
     pub fn is_paused(env: Env) -> bool {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         env.storage()
@@ -162,19 +194,28 @@ impl RoyaltySplitter {
             .unwrap_or(false)
     }
 
-    /// Returns true if the contract has been initialized.
+    /// Returns `true` if `initialize` has been called, `false` otherwise.
+    ///
+    /// Safe to call at any time — does not require initialization.
+    /// Extends TTL on every call so the storage entry stays live.
     pub fn is_initialized(env: Env) -> bool {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         env.storage().instance().has(&DataKey::Admin)
     }
 
-    /// Returns the contract's current balance of `token`.
+    /// Returns the contract's current on-chain balance of `token`.
+    ///
+    /// # Arguments
+    /// * `token` - The token contract address to query.
     pub fn get_balance(env: Env, token: Address) -> i128 {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         token::Client::new(&env, &token).balance(&env.current_contract_address())
     }
 
-    /// Returns the contract's balance of a specific token.
+    /// Alias for `get_balance`. Returns the contract's on-chain balance of `token`.
+    ///
+    /// # Arguments
+    /// * `token` - The token contract address to query.
     pub fn get_token_balance(env: Env, token: Address) -> i128 {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         token::Client::new(&env, &token).balance(&env.current_contract_address())
@@ -261,10 +302,19 @@ impl RoyaltySplitter {
             .set(&DataKey::LastDistribution, &env.ledger().timestamp());
     }
 
-    /// Record a secondary royalty payment from a resale.
+    /// Record a secondary royalty payment transferred from a resale.
+    ///
+    /// Pulls `royalty_amount` of `token` from `from` into the contract's
+    /// secondary pool via `transfer_from`. The caller must have pre-approved
+    /// the contract as a spender for at least `royalty_amount`.
+    ///
+    /// # Arguments
+    /// * `token` - Token used for the royalty payment.
+    /// * `from` - Address paying the royalty (typically the marketplace or buyer).
+    /// * `royalty_amount` - Amount in token's smallest unit (e.g., stroops for XLM).
     ///
     /// # Authorization
-    /// Requires signature from the `from` address
+    /// Requires signature from `from`.
     pub fn record_secondary_royalty(
         env: Env,
         token: Address,
@@ -298,8 +348,19 @@ impl RoyaltySplitter {
 
     /// Distribute all accumulated secondary royalties to collaborators.
     ///
+    /// Splits the entire secondary pool proportionally by basis-point shares.
+    /// Resets the pool to zero after distribution. The last collaborator absorbs
+    /// any integer-division dust (bounded by `n - 1` stroops).
+    ///
     /// # Authorization
-    /// Requires admin signature
+    /// Requires admin signature.
+    ///
+    /// # Panics
+    /// * `"contract not initialized"` — called before `initialize`
+    /// * `"contract is paused"` — contract is currently paused
+    /// * `"no secondary royalties to distribute"` — pool is empty
+    /// * `"no secondary token set"` — no royalty has ever been recorded
+    /// * `"pool exceeds contract balance"` — pool accounting is inconsistent
     pub fn distribute_secondary_royalties(env: Env) {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
 
@@ -383,7 +444,19 @@ impl RoyaltySplitter {
             .set(&DataKey::LastSecondaryDistribution, &env.ledger().timestamp());
     }
 
-    /// Calculate the royalty amount for a secondary sale.
+    /// Calculate and return the royalty amount for a given secondary sale price.
+    ///
+    /// This is a pure read function — it does not transfer tokens or modify state.
+    /// Use it to preview the royalty before calling `record_secondary_royalty`.
+    ///
+    /// # Arguments
+    /// * `sale_price` - The resale price in token's smallest unit (must be > 0).
+    ///
+    /// # Returns
+    /// `sale_price * royalty_rate / 10_000`. Returns 0 if no rate has been set.
+    ///
+    /// # Panics
+    /// * `"sale price must be positive"` — `sale_price <= 0`
     pub fn record_secondary_sale(env: Env, sale_price: i128) -> i128 {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
 
@@ -400,11 +473,18 @@ impl RoyaltySplitter {
         sale_price * rate as i128 / 10_000
     }
 
+    /// Returns the current secondary royalty rate in basis points (0–10,000).
+    /// Returns 0 if `set_royalty_rate` has never been called.
     pub fn get_royalty_rate(env: Env) -> u32 {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         env.storage().instance().get(&DataKey::RoyaltyRate).unwrap_or(0)
     }
 
+    /// Returns the contract's semantic version string (set from `CARGO_PKG_VERSION`
+    /// at initialization time).
+    ///
+    /// # Panics
+    /// * `"contract not initialized"` — called before `initialize`
     pub fn version(env: Env) -> String {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         env.storage()
@@ -413,6 +493,14 @@ impl RoyaltySplitter {
             .expect("contract not initialized")
     }
 
+    /// Returns the basis-point share for a registered collaborator.
+    ///
+    /// # Arguments
+    /// * `collaborator` - Address to look up.
+    ///
+    /// # Panics
+    /// * `"contract not initialized"` — called before `initialize`
+    /// * `"collaborator not found"` — address is not a registered collaborator
     pub fn get_share(env: Env, collaborator: Address) -> u32 {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         let share_map: Map<Address, u32> = env
@@ -471,6 +559,11 @@ impl RoyaltySplitter {
     }
 
     /// Returns true if the given address is a registered collaborator.
+    ///
+    /// Safe to call before initialization — returns `false` rather than panicking.
+    ///
+    /// # Arguments
+    /// * `addr` - Address to check.
     pub fn is_collaborator(env: Env, addr: Address) -> bool {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         let share_map: Map<Address, u32> = env
@@ -482,7 +575,10 @@ impl RoyaltySplitter {
         share_map.contains_key(addr)
     }
 
+    /// Returns the number of registered collaborators.
+    /// Returns 0 if called before initialization.
     pub fn collaborator_count(env: Env) -> u32 {
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         let collaborators: Vec<Address> = env
             .storage()
             .instance()
@@ -491,6 +587,8 @@ impl RoyaltySplitter {
         collaborators.len()
     }
 
+    /// Returns the ordered list of all registered collaborator addresses.
+    /// Returns an empty vec if called before initialization.
     pub fn get_collaborators(env: Env) -> Vec<Address> {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         env.storage()
@@ -508,6 +606,8 @@ impl RoyaltySplitter {
             .unwrap_or(Map::new(&env))
     }
 
+    /// Returns the current size of the secondary royalty pool (undistributed amount).
+    /// Returns 0 if no royalties have been recorded yet.
     pub fn get_secondary_pool(env: Env) -> i128 {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         env.storage().instance().get(&DataKey::SecondaryPool).unwrap_or(0)
@@ -525,7 +625,13 @@ impl RoyaltySplitter {
         env.storage().instance().get(&DataKey::LastSecondaryDistribution)
     }
 
-    /// Calculate the sum of all collaborator shares.
+    /// Returns the sum of all collaborator basis-point shares.
+    ///
+    /// Under normal operation this always returns 10,000. Useful for
+    /// pre-flight validation before calling `distribute`.
+    ///
+    /// # Panics
+    /// * `"contract not initialized"` — called before `initialize`
     pub fn get_total_shares(env: Env) -> u32 {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         let share_map: Map<Address, u32> = env
