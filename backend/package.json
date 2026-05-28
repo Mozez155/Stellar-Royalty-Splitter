@@ -8,7 +8,7 @@
     "start": "node src/index.js",
     "lint": "eslint src/**/*.js",
     "format": "prettier --write src/**/*.js",
-    "test": "echo \"No tests yet — see open issues\" && exit 0",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --testPathPatterns=tests/",
     "test:backend": "node --experimental-vm-modules node_modules/.bin/jest --testPathPatterns=tests/"
   },
   "jest": {
