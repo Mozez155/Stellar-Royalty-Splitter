@@ -6,7 +6,7 @@ use soroban_sdk::{
     vec, Address, Env, IntoVal, Map, String, Vec as SorobanVec,
 };
 use stellar_royalty_splitter::{
-    auth, DataKey, Recipient, RoyaltySplitterClient, StorageKey, VERSION,
+    auth, DataKey, Recipient, RoyaltySplitterClient, StorageKey, MIN_TTL, VERSION,
 };
 
 fn setup(env: &Env) -> (Address, RoyaltySplitterClient) {
@@ -175,13 +175,55 @@ fn test_ttl_extended_after_ledger_advance() {
 
     // Advance ledger sequence past MIN_TTL (17_280 ledgers).
     env.ledger()
-        .set_sequence_number(env.ledger().sequence() + 17_281);
+        .set_sequence_number(env.ledger().sequence() + MIN_TTL as u32 + 1);
 
     // Both read functions must still return correct data (TTL was extended).
     let collaborators = client.get_collaborators();
     assert_eq!(collaborators.len(), 2);
     assert_eq!(client.get_share(&a), 6000);
     assert_eq!(client.get_share(&b), 4000);
+}
+
+/// Issue #289 — state-writing entrypoints must extend TTL so writes succeed
+/// after the ledger advances past MIN_TTL.
+#[test]
+fn test_ttl_state_writes_after_ledger_advance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+    client.set_royalty_rate(&500_u32);
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + MIN_TTL as u32 + 1);
+
+    client.set_royalty_rate(&750_u32);
+    assert_eq!(client.get_royalty_rate(), 750);
+
+    client.pause();
+    assert!(client.is_paused());
+    client.unpause();
+    assert!(!client.is_paused());
+
+    client.update_share(&b, &6000_u32);
+    client.update_share(&admin, &4000_u32);
+
+    mint(&env, &token, &contract_id, 1000);
+    client.distribute(&token);
+    assert!(client.get_last_distribution().is_some());
+    assert_eq!(client.get_distribute_count(), 1);
+
+    client.record_secondary_royalty(&token, &admin, &100_i128);
+    assert_eq!(client.get_secondary_pool(), 100);
 }
 
 /// Events — distribute emits a ("royalty", "dist_all") event with (token, amount).
