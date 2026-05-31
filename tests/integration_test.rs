@@ -6,7 +6,7 @@ use soroban_sdk::{
     vec, Address, BytesN, Env, IntoVal, Map, String, TryFromVal, Val, Vec as SorobanVec,
 };
 use stellar_royalty_splitter::{
-    auth, DataKey, Recipient, RoyaltySplitterClient, StorageKey, MIN_TTL, VERSION,
+    auth, ContractError, DataKey, Recipient, RoyaltySplitterClient, StorageKey, MIN_TTL, VERSION,
 };
 
 fn setup(env: &Env) -> (Address, RoyaltySplitterClient) {
@@ -74,8 +74,7 @@ fn test_distribute_rejects_invalid_share_total() {
 }
 
 #[test]
-#[should_panic(expected = "no balance to distribute")]
-fn test_distribute_zero_balance_panics() {
+fn test_distribute_zero_balance_returns_underfunded_error() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
@@ -84,8 +83,9 @@ fn test_distribute_zero_balance_panics() {
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
     client.initialize(&vec![&env, a, b], &vec![&env, 5000_u32, 5000_u32]);
-    // contract balance is 0 — must panic
-    client.distribute(&token);
+    // contract balance is 0 - must return the typed underfunded error
+    let result = client.try_distribute(&token);
+    assert_eq!(result, Err(Ok(ContractError::Underfunded)));
 }
 
 #[test]
@@ -2462,13 +2462,9 @@ fn test_withdraw_unauthorized_caller() {
 
 // ── Issue #223: zero-balance distribute returns clean error ──────────────────
 
-/// Issue #223 — distribute called with zero contract balance must return a clean
-/// error (not a panic from arithmetic or unwrap). Verifies:
-/// 1. The contract panics with the expected message "no balance to distribute".
-/// 2. No state changes occur — collaborator balances remain zero.
-/// 3. The secondary pool is unaffected.
+/// Issue #223 - distribute called with zero contract balance must return a
+/// typed error before mutating distribution state.
 #[test]
-#[should_panic(expected = "no balance to distribute")]
 fn test_distribute_zero_balance() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -2486,16 +2482,19 @@ fn test_distribute_zero_balance() {
 
     // Confirm contract balance is zero before calling distribute
     assert_eq!(TokenClient::new(&env, &token).balance(&contract_id), 0);
+    assert_eq!(client.get_distribute_count(), 0);
+    assert_eq!(client.get_last_distribution(), None);
 
     // Confirm collaborator balances are zero before the call
     assert_eq!(TokenClient::new(&env, &token).balance(&admin), 0);
     assert_eq!(TokenClient::new(&env, &token).balance(&b), 0);
 
-    // Must panic with "no balance to distribute" — not an arithmetic panic or unwrap
-    client.distribute(&token);
+    let result = client.try_distribute(&token);
+    assert_eq!(result, Err(Ok(ContractError::Underfunded)));
 
-    // These assertions are unreachable but document the expected invariant:
-    // no state changes should have occurred.
+    assert_eq!(TokenClient::new(&env, &token).balance(&contract_id), 0);
     assert_eq!(TokenClient::new(&env, &token).balance(&admin), 0);
     assert_eq!(TokenClient::new(&env, &token).balance(&b), 0);
+    assert_eq!(client.get_distribute_count(), 0);
+    assert_eq!(client.get_last_distribution(), None);
 }

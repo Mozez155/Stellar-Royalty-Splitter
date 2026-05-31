@@ -3,8 +3,8 @@ pub mod auth;
 mod storage;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env, Map, String,
-    Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    Map, String, Vec,
 };
 
 #[contracttype]
@@ -47,6 +47,13 @@ pub use storage::MIN_TTL;
 /// between versions — read `get_version()` before invoking version-specific
 /// entrypoints and plan migrations explicitly when redeploying.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    Underfunded = 1,
+}
 
 #[contract]
 pub struct RoyaltySplitter;
@@ -444,7 +451,7 @@ impl RoyaltySplitter {
     ///
     /// # Panics
     /// * `"recipients list cannot be empty"` — no recipients are configured
-    /// * `"no balance to distribute"` — contract has zero balance of the token
+    /// * `ContractError::Underfunded` — contract has zero balance of the token
     /// * `"contract is paused"` — contract is currently paused
     pub fn distribute_with_override(env: Env, token: Address, override_recipients: Vec<Recipient>) {
         storage::extend_instance_ttl(&env);
@@ -464,6 +471,12 @@ impl RoyaltySplitter {
             .unwrap_or(false)
         {
             panic!("contract is paused");
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        let amount = token_client.balance(&env.current_contract_address());
+        if amount == 0 {
+            soroban_sdk::panic_with_error!(&env, ContractError::Underfunded);
         }
 
         // Determine which recipient list to use
@@ -517,12 +530,6 @@ impl RoyaltySplitter {
         }
         if total_shares != 10_000 {
             panic!("total shares must sum to 10000");
-        }
-
-        let token_client = token::Client::new(&env, &token);
-        let amount = token_client.balance(&env.current_contract_address());
-        if amount == 0 {
-            panic!("no balance to distribute");
         }
 
         let n = recipients_to_use.len();
@@ -605,7 +612,7 @@ impl RoyaltySplitter {
     ///
     /// # Panics
     /// * `"recipients list cannot be empty"` — no collaborators are configured
-    /// * `"no balance to distribute"` — contract has zero balance of the token
+    /// * `ContractError::Underfunded` — contract has zero balance of the token
     /// * `"contract is paused"` — contract is currently paused
     pub fn distribute(env: Env, token: Address) {
         // Call the enhanced version with empty override for backward compatibility
