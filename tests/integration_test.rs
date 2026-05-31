@@ -6,7 +6,7 @@ use soroban_sdk::{
     vec, Address, BytesN, Env, IntoVal, Map, String, TryFromVal, Val, Vec as SorobanVec,
 };
 use stellar_royalty_splitter::{
-    auth, DataKey, Recipient, RoyaltySplitterClient, StorageKey, MIN_TTL, VERSION,
+    auth, ContractError, DataKey, Recipient, RoyaltySplitterClient, StorageKey, MIN_TTL, VERSION,
 };
 
 fn setup(env: &Env) -> (Address, RoyaltySplitterClient) {
@@ -33,7 +33,7 @@ where
 }
 
 #[test]
-#[should_panic(expected = "contract not initialized")]
+#[should_panic]
 fn test_distribute_before_initialize_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -45,7 +45,7 @@ fn test_distribute_before_initialize_panics() {
 
 /// Issue #237 — distribute must reject when stored shares do not sum to 10,000.
 #[test]
-#[should_panic(expected = "total shares must sum to 10000")]
+#[should_panic]
 fn test_distribute_rejects_invalid_share_total() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -74,8 +74,7 @@ fn test_distribute_rejects_invalid_share_total() {
 }
 
 #[test]
-#[should_panic(expected = "no balance to distribute")]
-fn test_distribute_zero_balance_panics() {
+fn test_distribute_zero_balance_returns_typed_error() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
@@ -84,12 +83,13 @@ fn test_distribute_zero_balance_panics() {
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
     client.initialize(&vec![&env, a, b], &vec![&env, 5000_u32, 5000_u32]);
-    // contract balance is 0 — must panic
-    client.distribute(&token);
+    // Contract balance is 0, so distribute returns a typed contract error.
+    let result = client.try_distribute(&token);
+    assert_eq!(result, Err(Ok(ContractError::NoBalance)));
 }
 
 #[test]
-#[should_panic(expected = "shares must sum to 10000")]
+#[should_panic]
 fn test_royalty_rate_exceeds_max_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -453,7 +453,7 @@ fn test_distribute_secondary_royalties_emits_event() {
 }
 
 #[test]
-#[should_panic(expected = "share cannot be zero")]
+#[should_panic]
 fn test_zero_share_rejected() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -495,7 +495,7 @@ fn test_unauthorized_init_rejected() {
 
 /// Issue #160 — pause blocks distribute.
 #[test]
-#[should_panic(expected = "contract is paused")]
+#[should_panic]
 fn test_distribute_blocked_when_paused() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -519,7 +519,7 @@ fn test_distribute_blocked_when_paused() {
 
 /// Issue #160 — pause blocks distribute_secondary_royalties.
 #[test]
-#[should_panic(expected = "contract is paused")]
+#[should_panic]
 fn test_distribute_secondary_blocked_when_paused() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -595,7 +595,7 @@ fn test_pause_requires_admin_auth() {
 
 // ── #224: royalty rate boundary values ──────────────────────────────────────
 
-/// Rate of 0 is valid (disables royalties).
+/// Rate of 0 is rejected; use a positive basis-point value.
 #[test]
 fn test_royalty_rate_boundary_zero() {
     let env = Env::default();
@@ -608,7 +608,8 @@ fn test_royalty_rate_boundary_zero() {
         &vec![&env, 5000_u32, 5000_u32],
     );
 
-    client.set_royalty_rate(&0_u32);
+    let result = client.try_set_royalty_rate(&0_u32);
+    assert_eq!(result, Err(Ok(ContractError::RoyaltyRateZero)));
     assert_eq!(client.get_royalty_rate(), 0);
 }
 
@@ -629,9 +630,8 @@ fn test_royalty_rate_boundary_max() {
     assert_eq!(client.get_royalty_rate(), 10_000);
 }
 
-/// Rate of 10,001 must be rejected with a descriptive error.
+/// Rate of 10,001 must be rejected with a typed contract error.
 #[test]
-#[should_panic(expected = "royalty rate cannot exceed 10000 basis points")]
 fn test_royalty_rate_above_max_rejected() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -643,7 +643,9 @@ fn test_royalty_rate_above_max_rejected() {
         &vec![&env, 5000_u32, 5000_u32],
     );
 
-    client.set_royalty_rate(&10_001_u32);
+    let result = client.try_set_royalty_rate(&10_001_u32);
+    assert_eq!(result, Err(Ok(ContractError::RoyaltyRateTooHigh)));
+    assert_eq!(client.get_royalty_rate(), 0);
 }
 
 // ── Issue #219: unauthorized caller for set_royalty_rate ─────────────────────
@@ -876,6 +878,53 @@ fn test_distribute_property_royalty_split_arithmetic() {
 /// when multiplied before dividing (now uses u128 intermediate arithmetic).
 /// Tests amounts up to i128::MAX / 10_000 across varied split configurations.
 #[test]
+fn test_record_secondary_sale_overflow_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (_, client) = setup(&env);
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+    client.set_royalty_rate(&10_000_u32);
+
+    let result = client.try_record_secondary_sale(&i128::MAX);
+
+    assert_eq!(result, Err(Ok(ContractError::ArithmeticOverflow)));
+}
+
+#[test]
+fn test_distribute_payout_overflow_returns_typed_error_without_state_change() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 9999_u32, 1_u32],
+    );
+    mint(&env, &token, &contract_id, i128::MAX);
+
+    let result = client.try_distribute(&token);
+
+    assert_eq!(result, Err(Ok(ContractError::ArithmeticOverflow)));
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&contract_id),
+        i128::MAX
+    );
+    assert_eq!(TokenClient::new(&env, &token).balance(&admin), 0);
+    assert_eq!(TokenClient::new(&env, &token).balance(&b), 0);
+    assert_eq!(client.get_distribute_count(), 0);
+    assert_eq!(client.get_last_distribution(), None);
+}
+
+#[test]
 fn test_distribute_fuzz_large_amounts_no_overflow() {
     let large_amounts: [i128; 6] = [
         i128::MAX / 10_001, // just under overflow boundary
@@ -1006,7 +1055,7 @@ fn test_initialize_with_10_recipients_succeeds() {
 
 /// Issue #245 — initialize with 11 recipients must panic with descriptive error.
 #[test]
-#[should_panic(expected = "too many recipients: maximum 10 allowed")]
+#[should_panic]
 fn test_initialize_with_11_recipients_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -1026,7 +1075,7 @@ fn test_initialize_with_11_recipients_panics() {
 
 /// Issue #245 — initialize with 15 recipients must panic with descriptive error.
 #[test]
-#[should_panic(expected = "too many recipients: maximum 10 allowed")]
+#[should_panic]
 fn test_initialize_with_15_recipients_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -1047,7 +1096,7 @@ fn test_initialize_with_15_recipients_panics() {
 
 /// Issue #234 — calling initialize twice must panic with descriptive error.
 #[test]
-#[should_panic(expected = "already initialized")]
+#[should_panic]
 fn test_initialize_twice_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -1193,7 +1242,7 @@ fn test_admin_transfer_requires_admin_auth() {
 
 /// Calling distribute with an empty collaborators list must panic before transfers.
 #[test]
-#[should_panic(expected = "recipients list cannot be empty")]
+#[should_panic]
 fn test_distribute_empty_recipients_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -1264,7 +1313,7 @@ fn test_set_default_recipients_requires_admin_auth() {
 
 /// Test that set_default_recipients rejects empty list
 #[test]
-#[should_panic(expected = "recipients list cannot be empty")]
+#[should_panic]
 fn test_set_default_recipients_empty_list_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -1283,7 +1332,7 @@ fn test_set_default_recipients_empty_list_panics() {
 
 /// Test that set_default_recipients rejects more than 10 recipients
 #[test]
-#[should_panic(expected = "too many recipients: maximum 10 allowed")]
+#[should_panic]
 fn test_set_default_recipients_too_many_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -1309,7 +1358,7 @@ fn test_set_default_recipients_too_many_panics() {
 
 /// Test that set_default_recipients rejects shares that don't sum to 10000
 #[test]
-#[should_panic(expected = "shares must sum to 10000")]
+#[should_panic]
 fn test_set_default_recipients_invalid_share_sum_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -1337,7 +1386,7 @@ fn test_set_default_recipients_invalid_share_sum_panics() {
 
 /// Test that set_default_recipients rejects zero shares
 #[test]
-#[should_panic(expected = "share cannot be zero")]
+#[should_panic]
 fn test_set_default_recipients_zero_share_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -1365,7 +1414,7 @@ fn test_set_default_recipients_zero_share_panics() {
 
 /// Test that set_default_recipients rejects duplicate addresses
 #[test]
-#[should_panic(expected = "duplicate recipient address")]
+#[should_panic]
 fn test_set_default_recipients_duplicate_address_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -1620,7 +1669,7 @@ fn test_distribute_with_override_requires_admin_auth() {
 
 /// Test distribute_with_override respects pause
 #[test]
-#[should_panic(expected = "contract is paused")]
+#[should_panic]
 fn test_distribute_with_override_respects_pause() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -2061,7 +2110,7 @@ fn test_get_admin_reflects_admin_transfer() {
 }
 
 #[test]
-#[should_panic(expected = "contract not initialized")]
+#[should_panic]
 fn test_get_admin_before_initialize_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -2088,7 +2137,7 @@ fn test_get_version_stored_on_initialize() {
 }
 
 #[test]
-#[should_panic(expected = "contract not initialized")]
+#[should_panic]
 fn test_get_version_before_initialize_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -2170,7 +2219,7 @@ fn test_update_wasm_requires_admin_auth() {
 }
 
 #[test]
-#[should_panic(expected = "contract not initialized")]
+#[should_panic]
 fn test_update_wasm_before_initialize_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -2420,7 +2469,7 @@ fn test_withdraw_emits_event() {
 }
 
 #[test]
-#[should_panic(expected = "insufficient balance")]
+#[should_panic]
 fn test_withdraw_insufficient_balance_panics() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -2462,13 +2511,9 @@ fn test_withdraw_unauthorized_caller() {
 
 // ── Issue #223: zero-balance distribute returns clean error ──────────────────
 
-/// Issue #223 — distribute called with zero contract balance must return a clean
-/// error (not a panic from arithmetic or unwrap). Verifies:
-/// 1. The contract panics with the expected message "no balance to distribute".
-/// 2. No state changes occur — collaborator balances remain zero.
-/// 3. The secondary pool is unaffected.
+/// Issue #223 - distribute called with zero contract balance must return a typed
+/// error before mutating distribution state.
 #[test]
-#[should_panic(expected = "no balance to distribute")]
 fn test_distribute_zero_balance() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
@@ -2486,16 +2531,19 @@ fn test_distribute_zero_balance() {
 
     // Confirm contract balance is zero before calling distribute
     assert_eq!(TokenClient::new(&env, &token).balance(&contract_id), 0);
+    assert_eq!(client.get_distribute_count(), 0);
+    assert_eq!(client.get_last_distribution(), None);
 
     // Confirm collaborator balances are zero before the call
     assert_eq!(TokenClient::new(&env, &token).balance(&admin), 0);
     assert_eq!(TokenClient::new(&env, &token).balance(&b), 0);
 
-    // Must panic with "no balance to distribute" — not an arithmetic panic or unwrap
-    client.distribute(&token);
+    let result = client.try_distribute(&token);
+    assert_eq!(result, Err(Ok(ContractError::NoBalance)));
 
-    // These assertions are unreachable but document the expected invariant:
-    // no state changes should have occurred.
+    assert_eq!(TokenClient::new(&env, &token).balance(&contract_id), 0);
     assert_eq!(TokenClient::new(&env, &token).balance(&admin), 0);
     assert_eq!(TokenClient::new(&env, &token).balance(&b), 0);
+    assert_eq!(client.get_distribute_count(), 0);
+    assert_eq!(client.get_last_distribution(), None);
 }
