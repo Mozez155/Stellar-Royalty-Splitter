@@ -17,6 +17,11 @@ initializeRouter.post("/", validate(initializeSchema), async (req, res, next) =>
     if (!contractId || !walletAddress || !collaborators?.length || !shares?.length) {
       return res.status(400).json({ error: "Missing required fields." });
     }
+
+    if (Array.isArray(collaborators) && collaborators.length === 0) {
+      return res.status(400).json({ error: "Collaborators array must be non-empty" });
+    }
+
     if (collaborators.length !== shares.length) {
       return res
         .status(400)
