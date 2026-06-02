@@ -2118,6 +2118,99 @@ fn test_get_admin_reflects_admin_transfer() {
 }
 
 #[test]
+fn test_get_admin_remains_current_during_proposed_admin_transfer() {
+    let env = Env::default();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let pending_admin = Address::generate(&env);
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "propose_admin_transfer",
+            args: (&pending_admin,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.propose_admin_transfer(&pending_admin);
+
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
+fn test_get_admin_reflects_accepted_admin_transfer() {
+    let env = Env::default();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let pending_admin = Address::generate(&env);
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "propose_admin_transfer",
+            args: (&pending_admin,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.propose_admin_transfer(&pending_admin);
+
+    env.mock_auths(&[MockAuth {
+        address: &pending_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.accept_admin();
+
+    assert_eq!(client.get_admin(), pending_admin);
+}
+
+#[test]
+fn test_get_admin_updates_after_multiple_transfers() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (_, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let intermediate_admin = Address::generate(&env);
+    let final_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+    assert_eq!(client.get_admin(), admin);
+
+    client.admin_transfer(&intermediate_admin);
+    assert_eq!(client.get_admin(), intermediate_admin);
+
+    client.admin_transfer(&final_admin);
+    assert_eq!(client.get_admin(), final_admin);
+}
+
+#[test]
 #[should_panic]
 fn test_get_admin_before_initialize_panics() {
     let env = Env::default();
