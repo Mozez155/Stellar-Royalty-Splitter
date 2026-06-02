@@ -55,6 +55,24 @@ Build an unsigned `initialize` transaction XDR.
 
 **Response:** `{ xdr, transactionId }`
 
+Initialize requests are rejected before contract processing when the request body is too large or when the serialized `collaborators` array exceeds the initialize payload guard.
+
+**Oversized payload response:** `413 Payload Too Large`
+
+```json
+{
+  "error": "Payload too large"
+}
+```
+
+Collaborator-specific payload limit responses use:
+
+```json
+{
+  "error": "Collaborators payload too large"
+}
+```
+
 ## Distribute
 
 ### `POST /api/v1/distribute`
