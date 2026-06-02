@@ -1,12 +1,8 @@
 import { z } from "zod";
 
-export const stellarAddress = z
-  .string()
-  .regex(/^G[A-Z2-7]{55}$/, "Invalid Stellar address");
+export const stellarAddress = z.string().regex(/^G[A-Z2-7]{55}$/, "Invalid Stellar address");
 
-export const contractAddress = z
-  .string()
-  .regex(/^C[A-Z2-7]{55}$/, "Invalid contract address");
+export const contractAddress = z.string().regex(/^C[A-Z2-7]{55}$/, "Invalid contract address");
 
 export const basisPoints = z.number().int().min(0).max(10000);
 
@@ -23,6 +19,9 @@ export const initializeSchema = z
   .refine((d) => d.shares.reduce((a, b) => a + b, 0) === 10000, {
     message: "shares must sum to 10000 basis points",
   });
+
+export const INITIALIZE_PAYLOAD_LIMIT_BYTES = 10 * 1024;
+export const INITIALIZE_COLLABORATORS_PAYLOAD_LIMIT_BYTES = 8 * 1024;
 
 export const distributeSchema = z.object({
   contractId: contractAddress,
@@ -84,6 +83,28 @@ export function validate(schema) {
     req.body = result.data;
     next();
   };
+}
+
+function getJsonByteLength(value) {
+  return Buffer.byteLength(JSON.stringify(value ?? ""), "utf8");
+}
+
+export function validateInitializePayloadSize(req, res, next) {
+  const totalBodyBytes = getJsonByteLength(req.body);
+
+  if (totalBodyBytes > INITIALIZE_PAYLOAD_LIMIT_BYTES) {
+    return res.status(413).json({ error: "Payload too large" });
+  }
+
+  if (Array.isArray(req.body?.collaborators)) {
+    const collaboratorsBytes = getJsonByteLength(req.body.collaborators);
+
+    if (collaboratorsBytes > INITIALIZE_COLLABORATORS_PAYLOAD_LIMIT_BYTES) {
+      return res.status(413).json({ error: "Collaborators payload too large" });
+    }
+  }
+
+  next();
 }
 
 /**
