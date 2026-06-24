@@ -5037,7 +5037,7 @@ fn test_cancel_admin_proposal() {
     // Set royalty rate and record secondary royalties
     client.set_royalty_rate(&1000_u32); // 10%
     StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
-    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &1000, &9999999);
+    TokenClient::new(&env, &token).approve(&admin, &contract_id, &1000, &9999999);
     client.record_secondary_royalty(&token, &admin, &1000);
 
     // First distribution - will have dust from rounding
@@ -5052,7 +5052,7 @@ fn test_cancel_admin_proposal() {
 
     // Record more royalties
     StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
-    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &1000, &9999999);
+    TokenClient::new(&env, &token).approve(&admin, &contract_id, &1000, &9999999);
     client.record_secondary_royalty(&token, &admin, &1000);
 
     // Second distribution - should include accumulated dust
@@ -5103,7 +5103,7 @@ fn test_get_pending_admin_transfer_when_none() {
 
     client.set_royalty_rate(&1000_u32);
     StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
-    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &9999, &9999999);
+    TokenClient::new(&env, &token).approve(&admin, &contract_id, &9999, &9999999);
     client.record_secondary_royalty(&token, &admin, &9999);
 
     // Distribution with odd amount to create dust
@@ -5141,7 +5141,7 @@ fn test_dust_accumulation_many_small_transactions() {
     // Record many small royalty payments
     for _ in 0..10 {
         StellarAssetClient::new(&env, &token).mint(&admin, &100);
-        StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &10, &9999999);
+        TokenClient::new(&env, &token).approve(&admin, &contract_id, &10, &9999999);
         client.record_secondary_royalty(&token, &admin, &10);
     }
 
@@ -5192,11 +5192,11 @@ fn test_cancel_admin_proposal_fails_when_none() {
     // Check initialize event includes version
     let events = env.events().all();
     let init_event = events.get(0).unwrap();
-    let topics = init_event.topics;
+    let topics = init_event.1.clone();
     assert_eq!(topics.len(), 2);
     
     // The data should include event_version as first element
-    let data = init_event.data;
+    let data: SorobanVec<Val> = init_event.2.clone().into_val(&env);
     assert!(data.len() >= 2); // At least event_version and ledger_sequence
 }
 
@@ -5227,12 +5227,12 @@ fn test_events_include_ledger_sequence() {
     // Find the rate_set event (should be after init)
     for i in 0..events.len() {
         let event = events.get(i).unwrap();
-        let topics = event.topics;
+        let topics = event.1.clone();
         if topics.len() >= 2 {
             // Check if this is a royalty event
             let topic_str = format!("{:?}", topics.get(0).unwrap());
             if topic_str.contains("royalty") {
-                let data = event.data;
+                let data: SorobanVec<Val> = event.2.clone().into_val(&env);
                 assert!(data.len() >= 2); // event_version and ledger_sequence
             }
         }
@@ -5281,7 +5281,7 @@ fn test_event_ordering_with_ledger_sequence() {
     let mut royalty_events = 0;
     for i in 0..events.len() {
         let event = events.get(i).unwrap();
-        let topics = event.topics;
+        let topics = event.1.clone();
         if topics.len() >= 2 {
             let topic_str = format!("{:?}", topics.get(0).unwrap());
             if topic_str.contains("royalty") {
