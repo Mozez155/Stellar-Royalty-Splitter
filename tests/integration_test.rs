@@ -4356,6 +4356,487 @@ fn test_batch_distribute_large_batch() {
     assert_eq!(TokenClient::new(&env, &token9).balance(&b), 5000);
 }
 
+// ── Batch Distribute Tests ──────────────────────────────────────────────────
+
+/// Test that batch_distribute processes multiple tokens in one call.
+#[test]
+fn test_batch_distribute_multiple_tokens() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 6000_u32, 4000_u32],
+    );
+
+    // Create three different tokens
+    let token1 = make_token(&env, &token_admin);
+    let token2 = make_token(&env, &token_admin);
+    let token3 = make_token(&env, &token_admin);
+
+    // Mint different amounts to the contract for each token
+    mint(&env, &token1, &contract_id, 1000);
+    mint(&env, &token2, &contract_id, 2000);
+    mint(&env, &token3, &contract_id, 3000);
+
+    // Batch distribute all three tokens
+    client.batch_distribute(&vec![&env, token1.clone(), token2.clone(), token3.clone()]);
+
+    // Verify token1 distribution (1000 total: 600 + 400)
+    assert_eq!(TokenClient::new(&env, &token1).balance(&admin), 600);
+    assert_eq!(TokenClient::new(&env, &token1).balance(&b), 400);
+
+    // Verify token2 distribution (2000 total: 1200 + 800)
+    assert_eq!(TokenClient::new(&env, &token2).balance(&admin), 1200);
+    assert_eq!(TokenClient::new(&env, &token2).balance(&b), 800);
+
+    // Verify token3 distribution (3000 total: 1800 + 1200)
+    assert_eq!(TokenClient::new(&env, &token3).balance(&admin), 1800);
+    assert_eq!(TokenClient::new(&env, &token3).balance(&b), 1200);
+
+    // Verify distribute count incremented by 3
+    assert_eq!(client.get_distribute_count(), 3);
+}
+
+/// Test that batch_distribute emits events for each token.
+#[test]
+fn test_batch_distribute_emits_events() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let token1 = make_token(&env, &token_admin);
+    let token2 = make_token(&env, &token_admin);
+
+    mint(&env, &token1, &contract_id, 1000);
+    mint(&env, &token2, &contract_id, 2000);
+
+    client.batch_distribute(&vec![&env, token1.clone(), token2.clone()]);
+
+    let events = env.events().all();
+
+    // Check for dist_all events for both tokens
+    let token1_event = events.iter().any(|(cid, topics, data)| {
+        cid == contract_id
+            && topics
+                == vec![
+                    &env,
+                    symbol_short!("royalty").into_val(&env),
+                    symbol_short!("dist_all").into_val(&env),
+                ]
+            && val_eq(&env, data, (token1.clone(), 1000_i128))
+    });
+    assert!(token1_event, "token1 dist_all event not emitted");
+
+    let token2_event = events.iter().any(|(cid, topics, data)| {
+        cid == contract_id
+            && topics
+                == vec![
+                    &env,
+                    symbol_short!("royalty").into_val(&env),
+                    symbol_short!("dist_all").into_val(&env),
+                ]
+            && val_eq(&env, data, (token2.clone(), 2000_i128))
+    });
+    assert!(token2_event, "token2 dist_all event not emitted");
+
+    // Check for batch completion event
+    let batch_event = events.iter().any(|(cid, topics, data)| {
+        cid == contract_id
+            && topics
+                == vec![
+                    &env,
+                    symbol_short!("royalty").into_val(&env),
+                    symbol_short!("batch").into_val(&env),
+                ]
+            && val_eq(&env, data, 2_u32)
+    });
+    assert!(batch_event, "batch completion event not emitted");
+}
+
+/// Test that batch_distribute requires admin authorization.
+#[test]
+fn test_batch_distribute_requires_admin_auth() {
+    let env = Env::default();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    env.mock_all_auths_allowing_non_root_auth();
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let token1 = make_token(&env, &token_admin);
+    mint(&env, &token1, &contract_id, 1000);
+
+    // Use specific mock auth for admin
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "batch_distribute",
+            args: (vec![&env, token1.clone()],).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    client.batch_distribute(&vec![&env, token1]);
+    assert_eq!(client.get_distribute_count(), 1);
+}
+
+/// Test that batch_distribute fails when paused.
+#[test]
+fn test_batch_distribute_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let token1 = make_token(&env, &token_admin);
+    mint(&env, &token1, &contract_id, 1000);
+
+    client.pause();
+
+    let result = client.try_batch_distribute(&vec![&env, token1]);
+    assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
+}
+
+/// Test that batch_distribute succeeds after unpause.
+#[test]
+fn test_batch_distribute_succeeds_after_unpause() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let token1 = make_token(&env, &token_admin);
+    let token2 = make_token(&env, &token_admin);
+    mint(&env, &token1, &contract_id, 1000);
+    mint(&env, &token2, &contract_id, 2000);
+
+    client.pause();
+    client.unpause();
+
+    client.batch_distribute(&vec![&env, token1.clone(), token2.clone()]);
+
+    assert_eq!(TokenClient::new(&env, &token1).balance(&admin), 500);
+    assert_eq!(TokenClient::new(&env, &token2).balance(&admin), 1000);
+}
+
+/// Test that batch_distribute with single token works correctly.
+#[test]
+fn test_batch_distribute_single_token() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 7000_u32, 3000_u32],
+    );
+
+    let token = make_token(&env, &token_admin);
+    mint(&env, &token, &contract_id, 10_000);
+
+    client.batch_distribute(&vec![&env, token.clone()]);
+
+    assert_eq!(TokenClient::new(&env, &token).balance(&admin), 7000);
+    assert_eq!(TokenClient::new(&env, &token).balance(&b), 3000);
+    assert_eq!(client.get_distribute_count(), 1);
+}
+
+/// Test that batch_distribute fails if any token has zero balance.
+#[test]
+fn test_batch_distribute_fails_on_zero_balance() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let token1 = make_token(&env, &token_admin);
+    let token2 = make_token(&env, &token_admin);
+
+    mint(&env, &token1, &contract_id, 1000);
+    // token2 has zero balance
+
+    let result = client.try_batch_distribute(&vec![&env, token1, token2]);
+    assert_eq!(result, Err(Ok(ContractError::NoBalance)));
+}
+
+/// Test that batch_distribute handles dust correctly for each token.
+#[test]
+fn test_batch_distribute_handles_dust_correctly() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    // Three recipients with shares that create dust
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone(), c.clone()],
+        &vec![&env, 3333_u32, 3333_u32, 3334_u32],
+    );
+
+    let token1 = make_token(&env, &token_admin);
+    let token2 = make_token(&env, &token_admin);
+
+    mint(&env, &token1, &contract_id, 10_000);
+    mint(&env, &token2, &contract_id, 20_000);
+
+    client.batch_distribute(&vec![&env, token1.clone(), token2.clone()]);
+
+    // Verify token1 distribution (10,000 total)
+    let admin_bal1 = TokenClient::new(&env, &token1).balance(&admin);
+    let b_bal1 = TokenClient::new(&env, &token1).balance(&b);
+    let c_bal1 = TokenClient::new(&env, &token1).balance(&c);
+    assert_eq!(admin_bal1 + b_bal1 + c_bal1, 10_000);
+
+    // Verify token2 distribution (20,000 total)
+    let admin_bal2 = TokenClient::new(&env, &token2).balance(&admin);
+    let b_bal2 = TokenClient::new(&env, &token2).balance(&b);
+    let c_bal2 = TokenClient::new(&env, &token2).balance(&c);
+    assert_eq!(admin_bal2 + b_bal2 + c_bal2, 20_000);
+}
+
+/// Test that batch_distribute works with default recipients.
+#[test]
+fn test_batch_distribute_with_default_recipients() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Set custom default recipients
+    let custom_recipients = vec![
+        &env,
+        Recipient {
+            address: admin.clone(),
+            share: 2000,
+        },
+        Recipient {
+            address: b.clone(),
+            share: 3000,
+        },
+        Recipient {
+            address: c.clone(),
+            share: 5000,
+        },
+    ];
+    client.set_default_recipients(&custom_recipients);
+
+    let token1 = make_token(&env, &token_admin);
+    let token2 = make_token(&env, &token_admin);
+
+    mint(&env, &token1, &contract_id, 10_000);
+    mint(&env, &token2, &contract_id, 5_000);
+
+    client.batch_distribute(&vec![&env, token1.clone(), token2.clone()]);
+
+    // Verify token1 distribution with custom shares
+    assert_eq!(TokenClient::new(&env, &token1).balance(&admin), 2000);
+    assert_eq!(TokenClient::new(&env, &token1).balance(&b), 3000);
+    assert_eq!(TokenClient::new(&env, &token1).balance(&c), 5000);
+
+    // Verify token2 distribution with custom shares
+    assert_eq!(TokenClient::new(&env, &token2).balance(&admin), 1000);
+    assert_eq!(TokenClient::new(&env, &token2).balance(&b), 1500);
+    assert_eq!(TokenClient::new(&env, &token2).balance(&c), 2500);
+}
+
+/// Test that batch_distribute with many tokens increments counter correctly.
+#[test]
+fn test_batch_distribute_counter_increment() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Create 5 tokens
+    let mut tokens: SorobanVec<Address> = SorobanVec::new(&env);
+    for _ in 0..5 {
+        let token = make_token(&env, &token_admin);
+        mint(&env, &token, &contract_id, 1000);
+        tokens.push_back(token);
+    }
+
+    assert_eq!(client.get_distribute_count(), 0);
+
+    client.batch_distribute(&tokens);
+
+    // Counter should increment by 5
+    assert_eq!(client.get_distribute_count(), 5);
+}
+
+/// Test that batch_distribute updates last distribution timestamp.
+#[test]
+fn test_batch_distribute_updates_timestamp() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let token1 = make_token(&env, &token_admin);
+    let token2 = make_token(&env, &token_admin);
+
+    mint(&env, &token1, &contract_id, 1000);
+    mint(&env, &token2, &contract_id, 2000);
+
+    let timestamp = 1_700_000_000_u64;
+    env.ledger().with_mut(|ledger| ledger.timestamp = timestamp);
+
+    assert!(client.get_last_distribution().is_none());
+
+    client.batch_distribute(&vec![&env, token1, token2]);
+
+    assert_eq!(client.get_last_distribution(), Some(timestamp));
+}
+
+/// Test that batch_distribute fails if amount is too small for any token.
+#[test]
+fn test_batch_distribute_fails_on_amount_too_small() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    let token1 = make_token(&env, &token_admin);
+    let token2 = make_token(&env, &token_admin);
+
+    mint(&env, &token1, &contract_id, 1000);
+    mint(&env, &token2, &contract_id, 1); // Only 1 stroop, but 2 recipients
+
+    let result = client.try_batch_distribute(&vec![&env, token1, token2]);
+    assert_eq!(result, Err(Ok(ContractError::AmountTooSmall)));
+}
+
+/// Test batch_distribute with large number of tokens.
+#[test]
+fn test_batch_distribute_large_batch() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Create 10 tokens
+    let mut tokens: SorobanVec<Address> = SorobanVec::new(&env);
+    for i in 0..10 {
+        let token = make_token(&env, &token_admin);
+        mint(&env, &token, &contract_id, (i + 1) * 1000);
+        tokens.push_back(token);
+    }
+
+    client.batch_distribute(&tokens);
+
+    // Verify all distributions occurred
+    assert_eq!(client.get_distribute_count(), 10);
+
+    // Verify balances for a few tokens
+    let token0 = tokens.get(0).unwrap();
+    assert_eq!(TokenClient::new(&env, &token0).balance(&admin), 500);
+    assert_eq!(TokenClient::new(&env, &token0).balance(&b), 500);
+
+    let token9 = tokens.get(9).unwrap();
+    assert_eq!(TokenClient::new(&env, &token9).balance(&admin), 5000);
+    assert_eq!(TokenClient::new(&env, &token9).balance(&b), 5000);
+}
+
+
+// ── Issue #402: Admin Transfer Time-Lock Tests ───────────────────────────
+
+/// Test that propose_admin_transfer stores timestamp with pending admin.
+#[test]
+fn test_propose_admin_transfer_stores_timestamp() {
 /// Issue #398 — dust is tracked and distributed in the next batch.
 #[test]
 fn test_dust_tracked_and_distributed_in_next_batch() {
@@ -4364,6 +4845,186 @@ fn test_dust_tracked_and_distributed_in_next_batch() {
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    client.initialize(&vec![&env, admin.clone()], &vec![&env, 10_000_u32]);
+
+    client.propose_admin_transfer(&new_admin);
+
+    let (pending, timestamp, remaining) = client.get_pending_admin_transfer();
+    assert_eq!(pending, new_admin);
+    assert!(timestamp > 0);
+    assert!(remaining > 0);
+}
+
+/// Test that accept_admin fails before time-lock expires.
+#[test]
+fn test_accept_admin_fails_before_timelock() {
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Set royalty rate and record secondary royalties
+    client.set_royalty_rate(&1000_u32); // 10%
+    StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
+    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &1000, &9999999);
+    client.record_secondary_royalty(&token, &admin, &1000);
+
+    // First distribution - will have dust from rounding
+    client.distribute_secondary_royalties();
+
+    let admin_balance = TokenClient::new(&env, &token).balance(&admin);
+    let b_balance = TokenClient::new(&env, &token).balance(&b);
+
+    // 1000 * 10% = 100 total, split 50/50 = 50 each
+    assert_eq!(admin_balance, 50);
+    assert_eq!(b_balance, 50);
+
+    // Record more royalties
+    StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
+    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &1000, &9999999);
+    client.record_secondary_royalty(&token, &admin, &1000);
+
+    // Second distribution - should include accumulated dust
+    client.distribute_secondary_royalties();
+
+    let admin_balance2 = TokenClient::new(&env, &token).balance(&admin);
+    let b_balance2 = TokenClient::new(&env, &token).balance(&b);
+
+    // Each should have received another 50 + dust from previous round
+    assert!(admin_balance2 >= 100);
+    assert!(b_balance2 >= 100);
+}
+
+/// Issue #398 — dust doesn't exceed 1 basis point limit.
+#[test]
+fn test_dust_within_safety_limit() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone(), c.clone()],
+        &vec![&env, 3333_u32, 3333_u32, 3334_u32],
+    );
+
+    client.set_royalty_rate(&1000_u32);
+    StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
+    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &9999, &9999999);
+    client.record_secondary_royalty(&token, &admin, &9999);
+
+    // Distribution with odd amount to create dust
+    client.distribute_secondary_royalties();
+
+    // Verify dust is within limit (100 stroops = 1 basis point)
+    let total_distributed = TokenClient::new(&env, &token).balance(&admin)
+        + TokenClient::new(&env, &token).balance(&b)
+        + TokenClient::new(&env, &token).balance(&c);
+    
+    // 9999 * 10% = 999.9, rounded to 999
+    // Dust should be minimal
+    assert!(total_distributed <= 9999);
+}
+
+/// Issue #398 — dust accumulation with many small transactions.
+#[test]
+fn test_dust_accumulation_many_small_transactions() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    client.initialize(&vec![&env, admin.clone()], &vec![&env, 10_000_u32]);
+
+    client.propose_admin_transfer(&new_admin);
+
+    // Try to accept immediately - should fail
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.accept_admin();
+    }));
+    assert!(result.is_err());
+}
+
+/// Test that accept_admin succeeds after time-lock expires.
+#[test]
+fn test_accept_admin_succeeds_after_timelock() {
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    client.set_royalty_rate(&1000_u32);
+
+    // Record many small royalty payments
+    for _ in 0..10 {
+        StellarAssetClient::new(&env, &token).mint(&admin, &100);
+        StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &10, &9999999);
+        client.record_secondary_royalty(&token, &admin, &10);
+    }
+
+    // Total pool: 100
+    client.distribute_secondary_royalties();
+
+    let admin_balance = TokenClient::new(&env, &token).balance(&admin);
+    let b_balance = TokenClient::new(&env, &token).balance(&b);
+
+    // 100 total, split 50/50 = 50 each
+    assert_eq!(admin_balance, 50);
+    assert_eq!(b_balance, 50);
+
+    // Verify dust was tracked (should be 0 or very small)
+    let pool_after = client.get_secondary_pool();
+    assert_eq!(pool_after, 0);
+}
+
+/// Issue #398 — dust is tracked and distributed in the next batch.
+#[test]
+fn test_dust_tracked_and_distributed_in_next_batch() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    client.initialize(&vec![&env, admin.clone()], &vec![&env, 10_000_u32]);
+
+    client.propose_admin_transfer(&new_admin);
+
+    // Fast-forward past 48-hour time-lock
+    env.ledger().set(stellar_royalty_splitter::ADMIN_TRANSFER_TIMELOCK_DURATION + 1);
+
+    client.accept_admin();
+
+    // Verify admin changed
+    assert_eq!(client.get_admin(), new_admin);
+
+    // Verify pending admin cleared
+    let (pending, timestamp, remaining) = client.get_pending_admin_transfer();
+    assert_eq!(pending, Address::generate(&env)); // Should be zero address
+    assert_eq!(timestamp, 0);
+}
+
+/// Test that cancel_admin_proposal removes pending transfer.
+#[test]
+fn test_cancel_admin_proposal() {
     let b = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
@@ -4413,6 +5074,23 @@ fn test_dust_within_safety_limit() {
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    client.initialize(&vec![&env, admin.clone()], &vec![&env, 10_000_u32]);
+
+    client.propose_admin_transfer(&new_admin);
+
+    client.cancel_admin_proposal();
+
+    // Verify pending admin cleared
+    let (pending, timestamp, remaining) = client.get_pending_admin_transfer();
+    assert_eq!(pending, Address::generate(&env)); // Should be zero address
+    assert_eq!(timestamp, 0);
+}
+
+/// Test that get_pending_admin_transfer returns zero when no pending transfer.
+#[test]
+fn test_get_pending_admin_transfer_when_none() {
     let b = Address::generate(&env);
     let c = Address::generate(&env);
     let token_admin = Address::generate(&env);
@@ -4490,6 +5168,18 @@ fn test_events_include_event_version() {
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
+
+    client.initialize(&vec![&env, admin.clone()], &vec![&env, 10_000_u32]);
+
+    let (pending, timestamp, remaining) = client.get_pending_admin_transfer();
+    assert_eq!(pending, Address::generate(&env)); // Should be zero address
+    assert_eq!(timestamp, 0);
+    assert_eq!(remaining, 0);
+}
+
+/// Test that cancel_admin_proposal fails when no pending transfer.
+#[test]
+fn test_cancel_admin_proposal_fails_when_none() {
     let b = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
@@ -4557,6 +5247,16 @@ fn test_event_ordering_with_ledger_sequence() {
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
+
+    client.initialize(&vec![&env, admin.clone()], &vec![&env, 10_000_u32]);
+
+    // Try to cancel without pending transfer - should fail
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.cancel_admin_proposal();
+    }));
+    assert!(result.is_err());
+}
+
     let b = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
