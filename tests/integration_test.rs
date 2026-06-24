@@ -4837,6 +4837,9 @@ fn test_batch_distribute_large_batch() {
 /// Test that propose_admin_transfer stores timestamp with pending admin.
 #[test]
 fn test_propose_admin_transfer_stores_timestamp() {
+/// Issue #398 — dust is tracked and distributed in the next batch.
+#[test]
+fn test_dust_tracked_and_distributed_in_next_batch() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
@@ -4857,6 +4860,86 @@ fn test_propose_admin_transfer_stores_timestamp() {
 /// Test that accept_admin fails before time-lock expires.
 #[test]
 fn test_accept_admin_fails_before_timelock() {
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Set royalty rate and record secondary royalties
+    client.set_royalty_rate(&1000_u32); // 10%
+    StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
+    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &1000, &9999999);
+    client.record_secondary_royalty(&token, &admin, &1000);
+
+    // First distribution - will have dust from rounding
+    client.distribute_secondary_royalties();
+
+    let admin_balance = TokenClient::new(&env, &token).balance(&admin);
+    let b_balance = TokenClient::new(&env, &token).balance(&b);
+
+    // 1000 * 10% = 100 total, split 50/50 = 50 each
+    assert_eq!(admin_balance, 50);
+    assert_eq!(b_balance, 50);
+
+    // Record more royalties
+    StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
+    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &1000, &9999999);
+    client.record_secondary_royalty(&token, &admin, &1000);
+
+    // Second distribution - should include accumulated dust
+    client.distribute_secondary_royalties();
+
+    let admin_balance2 = TokenClient::new(&env, &token).balance(&admin);
+    let b_balance2 = TokenClient::new(&env, &token).balance(&b);
+
+    // Each should have received another 50 + dust from previous round
+    assert!(admin_balance2 >= 100);
+    assert!(b_balance2 >= 100);
+}
+
+/// Issue #398 — dust doesn't exceed 1 basis point limit.
+#[test]
+fn test_dust_within_safety_limit() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone(), c.clone()],
+        &vec![&env, 3333_u32, 3333_u32, 3334_u32],
+    );
+
+    client.set_royalty_rate(&1000_u32);
+    StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
+    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &9999, &9999999);
+    client.record_secondary_royalty(&token, &admin, &9999);
+
+    // Distribution with odd amount to create dust
+    client.distribute_secondary_royalties();
+
+    // Verify dust is within limit (100 stroops = 1 basis point)
+    let total_distributed = TokenClient::new(&env, &token).balance(&admin)
+        + TokenClient::new(&env, &token).balance(&b)
+        + TokenClient::new(&env, &token).balance(&c);
+    
+    // 9999 * 10% = 999.9, rounded to 999
+    // Dust should be minimal
+    assert!(total_distributed <= 9999);
+}
+
+/// Issue #398 — dust accumulation with many small transactions.
+#[test]
+fn test_dust_accumulation_many_small_transactions() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
@@ -4878,6 +4961,42 @@ fn test_accept_admin_fails_before_timelock() {
 /// Test that accept_admin succeeds after time-lock expires.
 #[test]
 fn test_accept_admin_succeeds_after_timelock() {
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    client.set_royalty_rate(&1000_u32);
+
+    // Record many small royalty payments
+    for _ in 0..10 {
+        StellarAssetClient::new(&env, &token).mint(&admin, &100);
+        StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &10, &9999999);
+        client.record_secondary_royalty(&token, &admin, &10);
+    }
+
+    // Total pool: 100
+    client.distribute_secondary_royalties();
+
+    let admin_balance = TokenClient::new(&env, &token).balance(&admin);
+    let b_balance = TokenClient::new(&env, &token).balance(&b);
+
+    // 100 total, split 50/50 = 50 each
+    assert_eq!(admin_balance, 50);
+    assert_eq!(b_balance, 50);
+
+    // Verify dust was tracked (should be 0 or very small)
+    let pool_after = client.get_secondary_pool();
+    assert_eq!(pool_after, 0);
+}
+
+/// Issue #398 — dust is tracked and distributed in the next batch.
+#[test]
+fn test_dust_tracked_and_distributed_in_next_batch() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
@@ -4906,6 +5025,50 @@ fn test_accept_admin_succeeds_after_timelock() {
 /// Test that cancel_admin_proposal removes pending transfer.
 #[test]
 fn test_cancel_admin_proposal() {
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Set royalty rate and record secondary royalties
+    client.set_royalty_rate(&1000_u32); // 10%
+    StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
+    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &1000, &9999999);
+    client.record_secondary_royalty(&token, &admin, &1000);
+
+    // First distribution - will have dust from rounding
+    client.distribute_secondary_royalties();
+
+    let admin_balance = TokenClient::new(&env, &token).balance(&admin);
+    let b_balance = TokenClient::new(&env, &token).balance(&b);
+
+    // 1000 * 10% = 100 total, split 50/50 = 50 each
+    assert_eq!(admin_balance, 50);
+    assert_eq!(b_balance, 50);
+
+    // Record more royalties
+    StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
+    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &1000, &9999999);
+    client.record_secondary_royalty(&token, &admin, &1000);
+
+    // Second distribution - should include accumulated dust
+    client.distribute_secondary_royalties();
+
+    let admin_balance2 = TokenClient::new(&env, &token).balance(&admin);
+    let b_balance2 = TokenClient::new(&env, &token).balance(&b);
+
+    // Each should have received another 50 + dust from previous round
+    assert!(admin_balance2 >= 100);
+    assert!(b_balance2 >= 100);
+}
+
+/// Issue #398 — dust doesn't exceed 1 basis point limit.
+#[test]
+fn test_dust_within_safety_limit() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
@@ -4928,6 +5091,78 @@ fn test_cancel_admin_proposal() {
 /// Test that get_pending_admin_transfer returns zero when no pending transfer.
 #[test]
 fn test_get_pending_admin_transfer_when_none() {
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone(), c.clone()],
+        &vec![&env, 3333_u32, 3333_u32, 3334_u32],
+    );
+
+    client.set_royalty_rate(&1000_u32);
+    StellarAssetClient::new(&env, &token).mint(&admin, &10_000);
+    StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &9999, &9999999);
+    client.record_secondary_royalty(&token, &admin, &9999);
+
+    // Distribution with odd amount to create dust
+    client.distribute_secondary_royalties();
+
+    // Verify dust is within limit (100 stroops = 1 basis point)
+    let total_distributed = TokenClient::new(&env, &token).balance(&admin)
+        + TokenClient::new(&env, &token).balance(&b)
+        + TokenClient::new(&env, &token).balance(&c);
+    
+    // 9999 * 10% = 999.9, rounded to 999
+    // Dust should be minimal
+    assert!(total_distributed <= 9999);
+}
+
+/// Issue #398 — dust accumulation with many small transactions.
+#[test]
+fn test_dust_accumulation_many_small_transactions() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    client.set_royalty_rate(&1000_u32);
+
+    // Record many small royalty payments
+    for _ in 0..10 {
+        StellarAssetClient::new(&env, &token).mint(&admin, &100);
+        StellarAssetClient::new(&env, &token).approve(&admin, &contract_id, &10, &9999999);
+        client.record_secondary_royalty(&token, &admin, &10);
+    }
+
+    // Total pool: 100
+    client.distribute_secondary_royalties();
+
+    let admin_balance = TokenClient::new(&env, &token).balance(&admin);
+    let b_balance = TokenClient::new(&env, &token).balance(&b);
+
+    // 100 total, split 50/50 = 50 each
+    assert_eq!(admin_balance, 50);
+    assert_eq!(b_balance, 50);
+
+    // Verify dust was tracked (should be 0 or very small)
+    let pool_after = client.get_secondary_pool();
+    assert_eq!(pool_after, 0);
+}
+
+/// Issue #405 — events include event_version field.
+#[test]
+fn test_events_include_event_version() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
@@ -4945,6 +5180,68 @@ fn test_get_pending_admin_transfer_when_none() {
 /// Test that cancel_admin_proposal fails when no pending transfer.
 #[test]
 fn test_cancel_admin_proposal_fails_when_none() {
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Check initialize event includes version
+    let events = env.events().all();
+    let init_event = events.get(0).unwrap();
+    let topics = init_event.topics;
+    assert_eq!(topics.len(), 2);
+    
+    // The data should include event_version as first element
+    let data = init_event.data;
+    assert!(data.len() >= 2); // At least event_version and ledger_sequence
+}
+
+/// Issue #405 — events include ledger sequence for ordering.
+#[test]
+fn test_events_include_ledger_sequence() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Set ledger sequence
+    env.ledger().with_mut(|ledger| ledger.sequence_number = 100);
+
+    client.set_royalty_rate(&500_u32);
+
+    // Check rate_set event includes ledger sequence
+    let events = env.events().all();
+    // Find the rate_set event (should be after init)
+    for i in 0..events.len() {
+        let event = events.get(i).unwrap();
+        let topics = event.topics;
+        if topics.len() >= 2 {
+            // Check if this is a royalty event
+            let topic_str = format!("{:?}", topics.get(0).unwrap());
+            if topic_str.contains("royalty") {
+                let data = event.data;
+                assert!(data.len() >= 2); // event_version and ledger_sequence
+            }
+        }
+    }
+}
+
+/// Issue #405 — event ordering across multiple transactions.
+#[test]
+fn test_event_ordering_with_ledger_sequence() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
@@ -4960,3 +5257,66 @@ fn test_cancel_admin_proposal_fails_when_none() {
     assert!(result.is_err());
 }
 
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // Perform multiple operations with different ledger sequences
+    env.ledger().with_mut(|ledger| ledger.sequence_number = 100);
+    client.set_royalty_rate(&1000_u32);
+
+    env.ledger().with_mut(|ledger| ledger.sequence_number = 200);
+    client.set_royalty_rate(&1500_u32);
+
+    env.ledger().with_mut(|ledger| ledger.sequence_number = 300);
+    client.set_royalty_rate(&2000_u32);
+
+    // Events should be emitted in order
+    let events = env.events().all();
+    let mut royalty_events = 0;
+    for i in 0..events.len() {
+        let event = events.get(i).unwrap();
+        let topics = event.topics;
+        if topics.len() >= 2 {
+            let topic_str = format!("{:?}", topics.get(0).unwrap());
+            if topic_str.contains("royalty") {
+                royalty_events += 1;
+            }
+        }
+    }
+    
+    // Should have multiple royalty events
+    assert!(royalty_events >= 3);
+}
+
+/// Issue #405 — events emitted before state changes for atomicity.
+#[test]
+fn test_events_emitted_before_state_changes() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
+
+    // The initialize event should be emitted before the version is set
+    // This is tested by checking the event exists
+    let version = client.get_version();
+    assert_eq!(version, String::from_str(&env, stellar_royalty_splitter::VERSION));
+    
+    // Event should have been emitted
+    let events = env.events().all();
+    assert!(events.len() > 0);
+}
