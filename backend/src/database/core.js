@@ -59,6 +59,21 @@ export function initializeDatabase() {
       sql: `/* initial schema — already applied via CREATE TABLE IF NOT EXISTS */`,
     },
     {
+      // Issue #420: admin-issued API keys for per-key rate limiting.
+      version: 6,
+      sql: `
+        CREATE TABLE IF NOT EXISTS api_keys (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          keyHash TEXT NOT NULL UNIQUE,
+          label TEXT,
+          createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          revokedAt DATETIME,
+          lastUsedAt DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_keys_keyHash ON api_keys(keyHash);
+      `,
+    },
+    {
       version: 5,
       sql: `
         -- Issue #401: Dead-letter queue for failed webhook deliveries

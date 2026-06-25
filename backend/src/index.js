@@ -26,6 +26,7 @@ import { metricsRouter } from "./routes/metrics.js";
 import { initializeSigningKey } from "./signing-key.js";
 import { sendError } from "./error-response.js";
 import { verifyRequestSignatureMiddleware } from "./request-signing.js";
+import { apiKeyRateLimiter } from "./api-key-rate-limit.js";
 
 // Initialize database on startup
 initializeDatabase();
@@ -89,7 +90,9 @@ app.use(
       "X-Timestamp",
       "X-Nonce",
       "X-Signature",
+      "X-API-Key",
     ],
+    exposedHeaders: ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
     maxAge: Number.isNaN(corsPreflightMaxAge) ? 86400 : corsPreflightMaxAge,
   })
 );
@@ -124,6 +127,11 @@ const readAnalyticsLimiter = rateLimit({
 });
 
 app.use(generalLimiter);
+
+// Per-API-key sliding window rate limiting (#420) — independent of the
+// per-IP limiters above. No-op when X-API-Key is absent.
+app.use(apiKeyRateLimiter);
+
 app.use(express.json({ limit: "10kb" }));
 
 // Ed25519 request signature verification for write operations (#392)

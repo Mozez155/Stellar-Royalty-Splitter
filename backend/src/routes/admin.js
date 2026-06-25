@@ -9,6 +9,7 @@ import {
   rotateSigningKey,
 } from "../signing-key.js";
 import { buildAndRecordTransaction } from "./_shared.js";
+import { createApiKey, listApiKeys, revokeApiKey } from "../database/index.js";
 
 export const adminRouter = Router();
 
@@ -141,3 +142,70 @@ adminRouter.post(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// API key management for per-key rate limiting (#420)
+// ---------------------------------------------------------------------------
+
+const generateKeySchema = z.object({
+  label: z.string().max(100, "label must be 100 characters or fewer").optional(),
+});
+
+/**
+ * POST /admin/generate-key
+ * Issue a new API key. The raw key is returned only in this response —
+ * only its hash is persisted, so it can never be retrieved again.
+ * Body: { label?: string }
+ * Header: Authorization: Bearer <ADMIN_ROTATE_TOKEN>
+ */
+adminRouter.post(
+  "/generate-key",
+  requireAdminRotateToken,
+  validate(generateKeySchema),
+  (req, res, next) => {
+    try {
+      const { id, apiKey, label, createdAt } = createApiKey(req.body.label);
+      logger.info("API key generated", { event: "api_key_generated", id, label });
+      res.json({ id, apiKey, label, createdAt });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * GET /admin/keys
+ * List API keys (never includes the raw key or its hash).
+ * Header: Authorization: Bearer <ADMIN_ROTATE_TOKEN>
+ */
+adminRouter.get("/keys", requireAdminRotateToken, (_req, res, next) => {
+  try {
+    res.json({ keys: listApiKeys() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /admin/keys/:id/revoke
+ * Revoke an API key by id.
+ * Header: Authorization: Bearer <ADMIN_ROTATE_TOKEN>
+ */
+adminRouter.post("/keys/:id/revoke", requireAdminRotateToken, (req, res, next) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) {
+      return sendError(res, 400, "bad_request", "id must be a positive integer");
+    }
+
+    const revoked = revokeApiKey(id);
+    if (!revoked) {
+      return sendError(res, 404, "not_found", "API key not found or already revoked");
+    }
+
+    logger.info("API key revoked", { event: "api_key_revoked", id });
+    res.json({ success: true, id });
+  } catch (err) {
+    next(err);
+  }
+});

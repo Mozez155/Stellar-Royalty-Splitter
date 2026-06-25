@@ -42,6 +42,14 @@ export {
 // Audit logging
 export { getAuditLog, addAuditLog } from "./audit.js";
 
+// API keys for per-key rate limiting (#420)
+export {
+  createApiKey,
+  listApiKeys,
+  revokeApiKey,
+  findActiveKeyByRawKey,
+} from "./api-keys.js";
+
 // Secondary royalties
 export {
   recordSecondarySale,
